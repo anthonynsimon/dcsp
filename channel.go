@@ -1,5 +1,9 @@
 package dcsp
 
+// TODO: add middleware functionality
+// TODO: add message frames (uuid, timestamp, context?)
+// TODO: use gob?
+
 type SendChannel interface {
 	Send([]byte) error
 }

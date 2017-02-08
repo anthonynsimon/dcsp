@@ -1,6 +1,6 @@
 package dcsp
 
 type Transport interface {
-	BlockingSend([]byte) error
-	BlockingReceive() []byte
+	SyncSend([]byte) error
+	SyncReceive() ([]byte, error)
 }

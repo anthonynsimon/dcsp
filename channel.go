@@ -9,7 +9,7 @@ type SendChannel interface {
 }
 
 type ReceiveChannel interface {
-	Receive() []byte
+	Receive() ([]byte, error)
 }
 
 func NewSendChannel(trans Transport) SendChannel {
@@ -35,9 +35,9 @@ type receiveChannel struct {
 }
 
 func (c *sendChannel) Send(msg []byte) error {
-	return c.transport.BlockingSend(msg)
+	return c.transport.SyncSend(msg)
 }
 
-func (c *receiveChannel) Receive() []byte {
-	return c.transport.BlockingReceive()
+func (c *receiveChannel) Receive() ([]byte, error) {
+	return c.transport.SyncReceive()
 }

@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	retryTime = 300 * time.Millisecond
+	retryTime = 1000 * time.Millisecond
 )
 
 func NewTCPTransport(addr string) Transport {
@@ -62,9 +62,10 @@ type tcpHandler struct {
 	logFields log.FieldLogger
 }
 
+// TODO: add shutdown/close signal
 func (t *tcpHandler) send(msg []byte) error {
 	for {
-		if t.conn == nil {
+		for t.conn == nil {
 			t.logFields.Info("attempting to connect with receiver")
 			conn, err := net.Dial("tcp", t.addr)
 			if err != nil {
@@ -80,6 +81,8 @@ func (t *tcpHandler) send(msg []byte) error {
 
 		_, err := writeFrame(msg, t.conn)
 		if err != nil {
+			t.conn.Close()
+			t.conn = nil
 			// TODO: handle client disconnected but conn exists
 			t.logFields.Error(err, "retrying in ", retryTime.String())
 			time.Sleep(retryTime)
@@ -89,6 +92,8 @@ func (t *tcpHandler) send(msg []byte) error {
 		t.logFields.Debug("wating for acknowledge signal")
 		n, err := readFrame(t.buf[:], t.conn)
 		if err != nil {
+			t.conn.Close()
+			t.conn = nil
 			t.logFields.Error(err, "retrying in ", retryTime.String())
 			time.Sleep(retryTime)
 			continue
@@ -96,6 +101,8 @@ func (t *tcpHandler) send(msg []byte) error {
 
 		response := string(t.buf[0:n])
 		if response != "OK" {
+			t.conn.Close()
+			t.conn = nil
 			t.logFields.Error("did not acknowledge. responded:", response, "retrying in ", retryTime.String())
 			time.Sleep(retryTime)
 			continue
@@ -107,7 +114,7 @@ func (t *tcpHandler) send(msg []byte) error {
 
 func (t *tcpHandler) receive() ([]byte, error) {
 	for {
-		if t.listener == nil {
+		for t.listener == nil {
 			t.logFields.Info("attempting to connect with sender")
 			l, err := net.Listen("tcp", t.addr)
 			if err != nil {
@@ -118,37 +125,46 @@ func (t *tcpHandler) receive() ([]byte, error) {
 			t.logFields.Info("connected")
 			t.listener = l
 		}
-		break
-	}
 
-	for t.conn == nil {
-		t.logFields.Debug("waiting for connection from sender")
-		c, err := t.listener.Accept()
-		if err != nil && err != io.EOF {
-			t.logFields.Error(err, "retrying in ", retryTime.String())
-			time.Sleep(retryTime)
+		for t.conn == nil {
+			t.logFields.Debug("waiting for connection from sender")
+			c, err := t.listener.Accept()
+			if err != nil && err != io.EOF {
+				t.listener.Close()
+				t.listener = nil
+				t.logFields.Error(err, "retrying in ", retryTime.String())
+				time.Sleep(retryTime)
+				continue
+			}
+			t.logFields.Debug("connection openned")
+			t.conn = c
+		}
+
+		t.logFields.Debug("waiting for message")
+		n, err := readFrame(t.buf[:], t.conn)
+		if err != nil {
+			t.listener.Close()
+			t.listener = nil
+			t.conn.Close()
+			t.conn = nil
+			t.logFields.Error(err)
 			continue
 		}
-		t.logFields.Debug("connection openned")
-		t.conn = c
+
+		t.logFields.Info("message received")
+		_, err = writeFrame([]byte("OK"), t.conn)
+		if err != nil {
+			t.listener.Close()
+			t.listener = nil
+			t.conn.Close()
+			t.conn = nil
+			t.logFields.Error(err)
+			continue
+		}
+
+		result := make([]byte, n)
+		copy(result[:], t.buf[:n])
+
+		return result, nil
 	}
-
-	t.logFields.Debug("waiting for message")
-	n, err := readFrame(t.buf[:], t.conn)
-	if err != nil {
-		t.logFields.Error(err)
-		return nil, err
-	}
-
-	t.logFields.Info("message received")
-	_, err = writeFrame([]byte("OK"), t.conn)
-	if err != nil {
-		t.logFields.Error(err)
-		return nil, err
-	}
-
-	result := make([]byte, n)
-	copy(result[:], t.buf[:n])
-
-	return result, nil
 }

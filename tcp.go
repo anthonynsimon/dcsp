@@ -2,133 +2,155 @@ package dcsp
 
 import (
 	"io"
-	"log"
 	"net"
 	"time"
+
+	log "github.com/Sirupsen/logrus"
+)
+
+const (
+	retryTime = 300 * time.Millisecond
 )
 
 func NewTCPTransport(addr string) Transport {
-	return &tcpTransport{
-		addr:           addr,
-		loggingEnabled: false,
+	t := tcpTransport{
+		logFields: log.WithFields(log.Fields{
+			"transport": "tcp",
+		}),
 	}
+
+	t.sendingHandler.addr = addr
+	t.receiveHandler.addr = addr
+
+	t.sendingHandler.logFields = t.logFields.WithFields(log.Fields{
+		"channelType": "sender",
+		"sendAddr":    addr,
+	})
+
+	t.receiveHandler.logFields = log.WithFields(log.Fields{
+		"channelType": "receive",
+		"recieveAddr": addr,
+	})
+
+	return &t
 }
 
 type tcpTransport struct {
-	loggingEnabled bool
-	sendBuf        [maxMessageSize]byte
-	recvBuf        [maxMessageSize]byte
-	addr           string
-	recvListener   net.Listener
-	recvConn       net.Conn
-	sendConn       net.Conn
+	sendingHandler tcpHandler
+	receiveHandler tcpHandler
+
+	logFields log.FieldLogger
 }
 
-// TODO: handle disconnected cases
-// TODO: make retries and timers configurable
-func (t *tcpTransport) BlockingSend(msg []byte) error {
+func (t *tcpTransport) BlockingSend(b []byte) error {
+	return t.sendingHandler.send(b)
+}
+
+func (t *tcpTransport) BlockingReceive() []byte {
+	return t.receiveHandler.receive()
+}
+
+type tcpHandler struct {
+	addr string
+
+	buf [maxMessageSize]byte
+
+	listener net.Listener
+
+	conn net.Conn
+
+	logFields log.FieldLogger
+}
+
+func (t *tcpHandler) send(msg []byte) error {
 	for {
-		if t.sendConn == nil {
-			t.log("[SENDER]: attempting to connect with receiver")
+		if t.conn == nil {
+			t.logFields.Info("attempting to connect with receiver")
 			conn, err := net.Dial("tcp", t.addr)
 			if err != nil {
-				t.log("[SENDER]:", err)
-				t.log("[SENDER]: retrying")
-				time.Sleep(150 * time.Millisecond)
+				t.logFields.Debug(err)
+				t.logFields.Debug("retrying in ", retryTime.String())
+				time.Sleep(retryTime)
 				continue
 			}
-			t.log("[SENDER]: conntected")
-			t.sendConn = conn
+			t.logFields.Info("conntected")
+			t.conn = conn
 		}
 
-		t.log("[SENDER]: sending message")
+		t.logFields.Debug("sending message")
 
-		_, err := writeFrame(msg, t.sendConn)
+		_, err := writeFrame(msg, t.conn)
 		if err != nil {
 			// TODO: handle client disconnected but conn exists
-			t.log("[SENDER]:", err)
-			t.log("[SENDER]: retrying")
-			time.Sleep(150 * time.Millisecond)
+			t.logFields.Debug(err, "retrying in ", retryTime.String())
+			time.Sleep(retryTime)
 			continue
 		}
 
-		t.log("[SENDER]: awating acknowledge signal")
-		n, err := readFrame(t.sendBuf[:], t.sendConn)
+		t.logFields.Debug("awating acknowledge signal")
+		n, err := readFrame(t.buf[:], t.conn)
 		if err != nil {
-			t.log("[SENDER]:", err)
-			t.log("[SENDER]: retrying")
-			time.Sleep(150 * time.Millisecond)
+			t.logFields.Debug(err, "retrying in ", retryTime.String())
+			time.Sleep(retryTime)
 			continue
 		}
 
-		response := string(t.sendBuf[0:n])
+		response := string(t.buf[0:n])
 		if response != "OK" {
-			t.log("[SENDER]: did not acknowledge:", response)
-			t.log("[SENDER]: retrying")
-			time.Sleep(150 * time.Millisecond)
+			t.logFields.Debug("did not acknowledge:", response)
+			t.logFields.Debug("retrying in ", retryTime.String())
+			time.Sleep(retryTime)
 			continue
 		}
-		t.log("[SENDER]: acknowledged")
+		t.logFields.Info("message sent")
 		return nil
 	}
 }
 
-func (t *tcpTransport) BlockingReceive() []byte {
+func (t *tcpHandler) receive() []byte {
 	for {
-		if t.recvListener == nil {
-			t.log("[RECEIVER] attempting to connect with sender")
+		if t.listener == nil {
+			t.logFields.Info("attempting to connect with sender")
 			l, err := net.Listen("tcp", t.addr)
 			if err != nil {
-				t.log("[RECEIVER]:", err)
-				t.log("[RECEIVER] retrying")
-				time.Sleep(150 * time.Millisecond)
+				t.logFields.Debug(err, "retrying in ", retryTime.String())
+				time.Sleep(retryTime)
 				continue
 			}
-			t.log("[RECEIVER] connected")
-			t.recvListener = l
+			t.logFields.Info("connected")
+			t.listener = l
 		}
 		break
 	}
 
-	for t.recvConn == nil {
-		t.log("[RECEIVER] waiting for connection from sender")
-		c, err := t.recvListener.Accept()
+	for t.conn == nil {
+		t.logFields.Debug("waiting for connection from sender")
+		c, err := t.listener.Accept()
 		if err != nil && err != io.EOF {
-			t.log("[RECEIVER]:", err)
-			t.log("[RECEIVER] retrying")
-			time.Sleep(150 * time.Millisecond)
+			t.logFields.Debug(err, "retrying in ", retryTime.String())
+			time.Sleep(retryTime)
 			continue
 		}
-		t.log("[RECEIVER] connection openned")
-		t.recvConn = c
+		t.logFields.Debug("connection openned")
+		t.conn = c
 	}
 
-	t.log("[RECEIVER] waiting for message")
-	n, err := readFrame(t.recvBuf[:], t.recvConn)
+	t.logFields.Debug("waiting for message")
+	n, err := readFrame(t.buf[:], t.conn)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	t.log("[RECEIVER] message received")
-	_, err = writeFrame([]byte("OK"), t.recvConn)
+	t.logFields.Info("message received")
+	_, err = writeFrame([]byte("OK"), t.conn)
 	if err != nil {
-		t.log(err)
+		t.logFields.Debug(err)
+		// TODO: return error!
+		return []byte{}
 	}
 
 	result := make([]byte, n)
-	copy(result[:], t.recvBuf[:n])
+	copy(result[:], t.buf[:n])
 
 	return result
-}
-
-func (t *tcpTransport) log(v ...interface{}) {
-	if t.loggingEnabled {
-		log.Println(v...)
-	}
-}
-
-func (t *tcpTransport) logf(format string, v ...interface{}) {
-	if t.loggingEnabled {
-		log.Printf(format, v...)
-	}
 }

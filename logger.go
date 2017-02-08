@@ -3,12 +3,25 @@ package dcsp
 import (
 	"os"
 
+	"io"
+
 	log "github.com/Sirupsen/logrus"
 )
 
-// TODO: make logging configurable
 func init() {
-	log.SetFormatter(&log.TextFormatter{})
-	log.SetOutput(os.Stdout)
-	log.SetLevel(log.WarnLevel)
+	SetLogFormatter(&log.TextFormatter{})
+	SetLogOutput(os.Stdout)
+	SetLogLevel(log.DebugLevel)
+}
+
+func SetLogFormatter(formatter log.Formatter) {
+	log.SetFormatter(formatter)
+}
+
+func SetLogOutput(out io.Writer) {
+	log.SetOutput(out)
+}
+
+func SetLogLevel(level log.Level) {
+	log.SetLevel(level)
 }

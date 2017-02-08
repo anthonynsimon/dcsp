@@ -39,7 +39,8 @@ func (t *tcpTransport) BlockingSend(msg []byte) error {
 		}
 
 		log.Println("[SENDER]: sending message")
-		_, err := t.sendConn.Write(msg)
+
+		_, err := writeFrame(msg, t.sendConn)
 		if err != nil {
 			// TODO: handle client disconnected but conn exists
 			log.Println("[SENDER]:", err)
@@ -49,8 +50,8 @@ func (t *tcpTransport) BlockingSend(msg []byte) error {
 		}
 
 		log.Println("[SENDER]: awating acknowledge signal")
-		var buf [512]byte
-		n, err := t.sendConn.Read(buf[:])
+		var buf [16]byte
+		n, err := readFrame(buf[:], t.sendConn)
 		if err != nil {
 			log.Println("[SENDER]:", err)
 			log.Println("[SENDER]: retrying")
@@ -101,13 +102,14 @@ func (t *tcpTransport) BlockingReceive() []byte {
 	}
 
 	log.Println("[RECEIVER] waiting for message")
-	var buf [512]byte
-	n, err := t.recvConn.Read(buf[:])
+	var buf [maxMessageSize]byte
+	n, err := readFrame(buf[:], t.recvConn)
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	log.Println("[RECEIVER] message received")
-	_, err = t.recvConn.Write([]byte("OK"))
+	_, err = writeFrame([]byte("OK"), t.recvConn)
 	if err != nil {
 		log.Println(err)
 	}

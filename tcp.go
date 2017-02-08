@@ -20,6 +20,9 @@ type tcpTransport struct {
 	sendConn     net.Conn
 }
 
+// TODO: setup logging
+// TODO: handle disconnected cases
+// TODO: make retries and timers configurable
 func (t *tcpTransport) BlockingSend(msg []byte) error {
 	for {
 		if t.sendConn == nil {

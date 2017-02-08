@@ -9,64 +9,66 @@ import (
 
 func NewTCPTransport(addr string) Transport {
 	return &tcpTransport{
-		addr: addr,
+		addr:           addr,
+		loggingEnabled: false,
 	}
 }
 
 type tcpTransport struct {
-	addr         string
-	recvListener net.Listener
-	recvConn     net.Conn
-	sendConn     net.Conn
+	loggingEnabled bool
+	sendBuf        [maxMessageSize]byte
+	recvBuf        [maxMessageSize]byte
+	addr           string
+	recvListener   net.Listener
+	recvConn       net.Conn
+	sendConn       net.Conn
 }
 
-// TODO: setup logging
 // TODO: handle disconnected cases
 // TODO: make retries and timers configurable
 func (t *tcpTransport) BlockingSend(msg []byte) error {
 	for {
 		if t.sendConn == nil {
-			log.Println("[SENDER]: attempting to connect with receiver")
+			t.log("[SENDER]: attempting to connect with receiver")
 			conn, err := net.Dial("tcp", t.addr)
 			if err != nil {
-				log.Println("[SENDER]:", err)
-				log.Println("[SENDER]: retrying")
+				t.log("[SENDER]:", err)
+				t.log("[SENDER]: retrying")
 				time.Sleep(150 * time.Millisecond)
 				continue
 			}
-			log.Println("[SENDER]: conntected")
+			t.log("[SENDER]: conntected")
 			t.sendConn = conn
 		}
 
-		log.Println("[SENDER]: sending message")
+		t.log("[SENDER]: sending message")
 
 		_, err := writeFrame(msg, t.sendConn)
 		if err != nil {
 			// TODO: handle client disconnected but conn exists
-			log.Println("[SENDER]:", err)
-			log.Println("[SENDER]: retrying")
+			t.log("[SENDER]:", err)
+			t.log("[SENDER]: retrying")
 			time.Sleep(150 * time.Millisecond)
 			continue
 		}
 
-		log.Println("[SENDER]: awating acknowledge signal")
-		var buf [16]byte
-		n, err := readFrame(buf[:], t.sendConn)
+		t.log("[SENDER]: awating acknowledge signal")
+		n, err := readFrame(t.sendBuf[:], t.sendConn)
 		if err != nil {
-			log.Println("[SENDER]:", err)
-			log.Println("[SENDER]: retrying")
+			t.log("[SENDER]:", err)
+			t.log("[SENDER]: retrying")
 			time.Sleep(150 * time.Millisecond)
 			continue
 		}
 
-		response := string(buf[0:n])
+		response := string(t.sendBuf[0:n])
 		if response != "OK" {
-			log.Println("[SENDER]: did not acknowledge:", response)
-			log.Println("[SENDER]: retrying")
+			t.log("[SENDER]: did not acknowledge:", response)
+			t.log("[SENDER]: retrying")
 			time.Sleep(150 * time.Millisecond)
 			continue
 		}
-		log.Println("[SENDER]: acknowledged")
+		t.log("[SENDER]: acknowledged")
 		return nil
 	}
 }
@@ -74,48 +76,59 @@ func (t *tcpTransport) BlockingSend(msg []byte) error {
 func (t *tcpTransport) BlockingReceive() []byte {
 	for {
 		if t.recvListener == nil {
-			log.Println("[RECEIVER] attempting to connect with sender")
+			t.log("[RECEIVER] attempting to connect with sender")
 			l, err := net.Listen("tcp", t.addr)
 			if err != nil {
-				log.Println("[RECEIVER]:", err)
-				log.Println("[RECEIVER] retrying")
+				t.log("[RECEIVER]:", err)
+				t.log("[RECEIVER] retrying")
 				time.Sleep(150 * time.Millisecond)
 				continue
 			}
-			log.Println("[RECEIVER] connected")
+			t.log("[RECEIVER] connected")
 			t.recvListener = l
 		}
 		break
 	}
 
 	for t.recvConn == nil {
-		log.Println("[RECEIVER] waiting for connection from sender")
+		t.log("[RECEIVER] waiting for connection from sender")
 		c, err := t.recvListener.Accept()
 		if err != nil && err != io.EOF {
-			log.Println("[RECEIVER]:", err)
-			log.Println("[RECEIVER] retrying")
+			t.log("[RECEIVER]:", err)
+			t.log("[RECEIVER] retrying")
 			time.Sleep(150 * time.Millisecond)
 			continue
 		}
-		log.Println("[RECEIVER] connection openned")
+		t.log("[RECEIVER] connection openned")
 		t.recvConn = c
 	}
 
-	log.Println("[RECEIVER] waiting for message")
-	var buf [maxMessageSize]byte
-	n, err := readFrame(buf[:], t.recvConn)
+	t.log("[RECEIVER] waiting for message")
+	n, err := readFrame(t.recvBuf[:], t.recvConn)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	log.Println("[RECEIVER] message received")
+	t.log("[RECEIVER] message received")
 	_, err = writeFrame([]byte("OK"), t.recvConn)
 	if err != nil {
-		log.Println(err)
+		t.log(err)
 	}
 
 	result := make([]byte, n)
-	copy(result[:], buf[:n])
+	copy(result[:], t.recvBuf[:n])
 
 	return result
+}
+
+func (t *tcpTransport) log(v ...interface{}) {
+	if t.loggingEnabled {
+		log.Println(v...)
+	}
+}
+
+func (t *tcpTransport) logf(format string, v ...interface{}) {
+	if t.loggingEnabled {
+		log.Printf(format, v...)
+	}
 }

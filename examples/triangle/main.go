@@ -7,9 +7,9 @@ import (
 
 	"log"
 
-	"os"
-
 	"time"
+
+	"os"
 
 	"github.com/anthonynsimon/dcsp"
 )
@@ -40,20 +40,32 @@ func entitiy(name, saddr, raddr string, sendFirst bool) {
 		go fileWriter(outChan, fileOut)
 
 		i := 0
+		start := time.Now()
 		for {
 			sch.Send([]byte(fmt.Sprintf("#%010d sent from %s", i, name)))
-			msg := rch.Receive()
+			msg, err := rch.Receive()
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
 			outChan <- fmt.Sprintf("%s => received by %s\r\n", msg, name)
 			i++
+			if i == 50000 {
+				fmt.Println(time.Since(start))
+				return
+			}
 		}
 	} else {
 		for {
-			time.Sleep(50 * time.Millisecond)
-			msg := rch.Receive()
+			//time.Sleep(50 * time.Millisecond)
+			msg, err := rch.Receive()
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
 			sch.Send([]byte(fmt.Sprintf("%s => %s", msg, name)))
 		}
 	}
-
 }
 
 func fileWriter(ch chan string, w io.Writer) {

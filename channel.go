@@ -1,8 +1,6 @@
 package dcsp
 
-// TODO: add middleware functionality
 // TODO: add message frames (uuid, timestamp, context?)
-// TODO: use gob?
 
 type Middleware func([]byte) []byte
 

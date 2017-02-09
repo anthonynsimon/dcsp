@@ -1,13 +1,13 @@
 package dcsp
 
-import "sync"
+import "math/rand"
 
 type selector struct {
-	fn func([]byte, error)
+	fn func()
 	ch ReceiveChannel
 }
 
-func (s *selector) Func() func([]byte, error) {
+func (s *selector) Func() func() {
 	return s.fn
 }
 
@@ -16,7 +16,7 @@ func (s *selector) Chan() ReceiveChannel {
 }
 
 type Selector interface {
-	Func() func([]byte, error)
+	Func() func()
 	Chan() ReceiveChannel
 }
 
@@ -24,18 +24,16 @@ type Selector interface {
 // TODO: fix this, needs to poll the chan before pulling/pushing
 // maybe acknowledge on return, via defer
 func Select(selectors ...Selector) {
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	for _, s := range selectors {
-		go func() {
-			msg, err := s.Chan().Receive()
-			wg.Done()
-			s.Func()(msg, err)
-		}()
+	for {
+		l := len(selectors)
+		s := selectors[rand.Intn(l)]
+		if s.Chan().Ready() {
+			s.Func()()
+			return
+		}
 	}
-	wg.Wait()
 }
 
-func NewSelector(ch ReceiveChannel, fn func([]byte, error)) Selector {
+func NewSelector(ch ReceiveChannel, fn func()) Selector {
 	return &selector{ch: ch, fn: fn}
 }

@@ -6,13 +6,16 @@ type Middleware func([]byte) []byte
 
 type SendChannel interface {
 	Send([]byte) error
+	Ready() bool
 }
 
 type ReceiveChannel interface {
 	Receive() ([]byte, error)
+	Ready() bool
 }
 
 func NewSendChannel(trans Transport, middleware ...Middleware) SendChannel {
+	go trans.EnsureSend()
 	return &sendChannel{
 		transport:  trans,
 		middleware: middleware,
@@ -20,6 +23,7 @@ func NewSendChannel(trans Transport, middleware ...Middleware) SendChannel {
 }
 
 func NewReceiveChannel(trans Transport, middleware ...Middleware) ReceiveChannel {
+	go trans.EnsureReceive()
 	return &receiveChannel{
 		transport:  trans,
 		middleware: middleware,
@@ -28,13 +32,11 @@ func NewReceiveChannel(trans Transport, middleware ...Middleware) ReceiveChannel
 
 // TODO: combine sendChannel and receiveChannel into one struct?
 type sendChannel struct {
-	addr       string
 	transport  Transport
 	middleware []Middleware
 }
 
 type receiveChannel struct {
-	addr       string
 	transport  Transport
 	middleware []Middleware
 }
@@ -55,4 +57,12 @@ func (c *receiveChannel) Receive() ([]byte, error) {
 		msg = mid(msg)
 	}
 	return msg, nil
+}
+
+func (c *sendChannel) Ready() bool {
+	return c.transport.Ready()
+}
+
+func (c *receiveChannel) Ready() bool {
+	return c.transport.Ready()
 }

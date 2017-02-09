@@ -49,6 +49,13 @@ func (t *tcpTransport) SyncSend(b []byte) error {
 func (t *tcpTransport) SyncReceive() ([]byte, error) {
 	return t.receiveHandler.receive()
 }
+func (t *tcpTransport) EnsureSend() {
+	t.sendHandler.EnsureSendConn()
+}
+
+func (t *tcpTransport) EnsureReceive() {
+	t.sendHandler.EnsureReceiveConn()
+}
 
 type tcpHandler struct {
 	addr string
@@ -60,10 +67,11 @@ type tcpHandler struct {
 	conn net.Conn
 
 	logFields log.FieldLogger
+
+	ready bool
 }
 
-// TODO: add shutdown/close signal
-func (t *tcpHandler) send(msg []byte) error {
+func (t *tcpHandler) EnsureSendConn() {
 	for {
 		for t.conn == nil {
 			t.logFields.Info("attempting to connect with receiver")
@@ -77,42 +85,41 @@ func (t *tcpHandler) send(msg []byte) error {
 			t.conn = conn
 		}
 
-		t.logFields.Debug("sending message")
-
-		_, err := writeFrame(msg, t.conn)
+		// Send ready signal
+		t.logFields.Debug("sending ready message")
+		_, err := writeFrame([]byte("RDY?"), t.conn)
 		if err != nil {
+			t.logFields.Error(err, "retrying in ", retryTime.String())
 			t.conn.Close()
 			t.conn = nil
-			// TODO: handle client disconnected but conn exists
-			t.logFields.Error(err, "retrying in ", retryTime.String())
 			time.Sleep(retryTime)
 			continue
 		}
 
-		t.logFields.Debug("wating for acknowledge signal")
+		// Block until receiver is ready to be sent a message
+		t.logFields.Debug("wating for ready signal")
 		n, err := readFrame(t.buf[:], t.conn)
 		if err != nil {
+			t.logFields.Error("error while waiting for ready signal", err)
 			t.conn.Close()
 			t.conn = nil
-			t.logFields.Error(err, "retrying in ", retryTime.String())
-			time.Sleep(retryTime)
 			continue
 		}
 
 		response := string(t.buf[0:n])
-		if response != "OK" {
+		if response != "RDY" {
+			t.logFields.Error("expected ready message, got:", response, err)
 			t.conn.Close()
 			t.conn = nil
-			t.logFields.Error("did not acknowledge. responded:", response, "retrying in ", retryTime.String())
-			time.Sleep(retryTime)
 			continue
 		}
-		t.logFields.Info("message sent")
-		return nil
+
+		t.ready = true
+		return
 	}
 }
 
-func (t *tcpHandler) receive() ([]byte, error) {
+func (t *tcpHandler) EnsureReceiveConn() {
 	for {
 		for t.listener == nil {
 			t.logFields.Info("attempting to connect with sender")
@@ -130,8 +137,6 @@ func (t *tcpHandler) receive() ([]byte, error) {
 			t.logFields.Debug("waiting for connection from sender")
 			c, err := t.listener.Accept()
 			if err != nil && err != io.EOF {
-				t.listener.Close()
-				t.listener = nil
 				t.logFields.Error(err, "retrying in ", retryTime.String())
 				time.Sleep(retryTime)
 				continue
@@ -140,24 +145,94 @@ func (t *tcpHandler) receive() ([]byte, error) {
 			t.conn = c
 		}
 
+		// Block until sender is ready to send a message
+		t.logFields.Debug("wating for ready signal")
+		n, err := readFrame(t.buf[:], t.conn)
+		if err != nil {
+			t.logFields.Error("error while waiting for ready signal", err)
+			continue
+		}
+
+		response := string(t.buf[0:n])
+		if response != "RDY?" {
+			t.logFields.Error("expected ready message, got:", response, err)
+			continue
+		}
+
+		// Send ready signal
+		t.logFields.Debug("sending ready message")
+		_, err = writeFrame([]byte("RDY"), t.conn)
+		if err != nil {
+			t.logFields.Error(err, "retrying in ", retryTime.String())
+			time.Sleep(retryTime)
+			continue
+		}
+		t.ready = true
+		return
+	}
+}
+
+func (t *tcpTransport) Ready() bool {
+	return t.sendHandler.ready || t.receiveHandler.ready
+}
+
+// TODO: add shutdown/close signal
+func (t *tcpHandler) send(msg []byte) error {
+	for {
+		t.ready = false
+		// Block until conn is available
+		t.EnsureSendConn()
+		defer func() {
+			t.ready = false
+		}()
+
+		t.logFields.Debug("sending message")
+		_, err := writeFrame(msg, t.conn)
+		if err != nil {
+			// TODO: handle client disconnected but conn exists
+			t.logFields.Error(err, "retrying in ", retryTime.String())
+			time.Sleep(retryTime)
+			continue
+		}
+
+		t.logFields.Debug("wating for acknowledge signal")
+		n, err := readFrame(t.buf[:], t.conn)
+		if err != nil {
+			t.logFields.Error(err, "retrying in ", retryTime.String())
+			time.Sleep(retryTime)
+			continue
+		}
+
+		response := string(t.buf[0:n])
+		if response != "ACK" {
+			t.logFields.Error("did not acknowledge. responded:", response, "retrying in ", retryTime.String())
+			time.Sleep(retryTime)
+			continue
+		}
+		t.logFields.Info("message sent")
+		return nil
+	}
+}
+
+func (t *tcpHandler) receive() ([]byte, error) {
+	for {
+		t.ready = false
+		// Block until conn is available
+		t.EnsureReceiveConn()
+		defer func() {
+			t.ready = false
+		}()
+
 		t.logFields.Debug("waiting for message")
 		n, err := readFrame(t.buf[:], t.conn)
 		if err != nil {
-			t.listener.Close()
-			t.listener = nil
-			t.conn.Close()
-			t.conn = nil
 			t.logFields.Error(err)
 			continue
 		}
 
-		t.logFields.Info("message received")
-		_, err = writeFrame([]byte("OK"), t.conn)
+		t.logFields.Info("message received. sending acknowledge signal")
+		_, err = writeFrame([]byte("ACK"), t.conn)
 		if err != nil {
-			t.listener.Close()
-			t.listener = nil
-			t.conn.Close()
-			t.conn = nil
 			t.logFields.Error(err)
 			continue
 		}
